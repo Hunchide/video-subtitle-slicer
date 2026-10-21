@@ -1,5 +1,7 @@
 # video-subtitle-slicer
 
+![License](https://img.shields.io/badge/license-MIT-green) ![Platform](https://img.shields.io/badge/platform-macOS%20%2F%20Apple%20Silicon-000) ![Python](https://img.shields.io/badge/python-3.9%2B-blue) ![Offline](https://img.shields.io/badge/works-offline-OK-success) ![WorkBuddy](https://img.shields.io/badge/WorkBuddy-skill-9cf)
+
 把「成片视频」（多为竖屏、已烧录字幕）切成多张图片，**每图一句完整字幕**，方便拼台词做成图文笔记（小红书 / 公众号等）。
 
 - **默认 `raw` 模式**：不靠语音识别、不需要 OCR，直接用「字幕行边缘变化检测」逐条抓画面里烧录的字幕 —— 一套图按时间顺序连起来就是**完整逐字稿**，文字与原片 100% 一致。
