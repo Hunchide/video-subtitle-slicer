@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Output artifacts (generated per run, not committed)
+*_字幕图/
+字幕图/
+总览_*.jpg
+001.jpg
+
+# OS
+.DS_Store

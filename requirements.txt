@@ -1,0 +1,7 @@
+# 听写后端（Apple Silicon 走 GPU）
+mlx-whisper
+# 繁→简中文
+opencc-python-reimplemented
+# 图片处理
+Pillow
+# 注：ffmpeg 需另行安装（macOS: brew install ffmpeg；Linux: apt install ffmpeg）
