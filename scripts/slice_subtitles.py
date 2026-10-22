@@ -4,11 +4,11 @@
 把「成片视频」切成多张图片，每图一句完整字幕 —— 方便拼台词做图文笔记（如小红书）。
 
 设计：
-  成片视频（多为竖屏、烧录字幕）没有独立字幕流 → 用 mlx-whisper 听写音频拿短句，
+  成片视频（多为竖屏、烧录字幕）没有独立字幕流 → 用 whisper 听写音频拿短句，
   再按「句末标点」合并成「一句完整字幕」；对每句取时间中点截一帧，PIL 把这句字幕
   叠加到底部（半透明黑条 + 白字描边），输出 001.jpg / 002.jpg ... + manifest.json。
 
-四种模式：
+五种模式：
   raw      默认。**按烧录字幕「换一句」出图**：检测字幕条变化，每条字幕一张图，
            整套图连起来就是完整逐字稿（不重绘，保留画面里的原字幕）
   sentence 按 ASR 整句截中点帧（一句话一张，粒度粗，字幕可能只有半句）
@@ -16,31 +16,42 @@
   frame    视频帧 + 脚本叠加的字幕（半透明条+白字描边），适合原片无字幕
   textcard 纯文字卡（浅底 + 大字台词 + 时间码，不带画面，适合干净排版）
 
-用法：
-  python slice_subtitles.py <video.mp4>                    # raw（默认，按字幕换句出全套）
-  python slice_subtitles.py <video.mp4> --mode sentence
-  python slice_subtitles.py <video.mp4> --mode hybrid
-  python slice_subtitles.py <video.mp4> --mode textcard
-  python slice_subtitles.py <video.mp4> --sub-band 0.66,0.80 --detect-fps 3
-  python slice_subtitles.py <video.mp4> --dry-run        # 只打印会出多少张图，不生成
+跨平台 / 跨 agent：
+  - 字体按操作系统自动探测（macOS / Windows / Linux），可用 --font 覆盖。
+  - 听写后端：Apple Silicon 默认 mlx-whisper（走 GPU）；其它平台自动回退 openai-whisper。
+    也可用 --backend auto|mlx|openai 显式指定。
+  - ffmpeg / ffprobe 默认取 PATH；可用环境变量 FFMPEG_BIN / FFPROBE_BIN 或 --ffmpeg 指定。
+  - 本工具是纯命令行，任何能调用 Python / Shell 的 agent、CI 或系统都能直接使用，
+    不依赖任何特定 agent 框架。
 
-依赖：mlx_whisper（Apple GPU）、opencc（简体）、Pillow、ffmpeg。
+依赖：whisper 后端之一（mlx-whisper 或 openai-whisper）、opencc（简体）、Pillow、ffmpeg。
 """
 import argparse
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
 import tempfile
 import shutil
 
-# ---------- 转写后端（复用 mlx-whisper，和 video-transcribe-cn 同源） ----------
+# ---------- 外部可执行文件路径（可经环境变量 / --ffmpeg 覆盖，跨平台友好） ----------
+FFMPEG = os.environ.get("FFMPEG_BIN", "ffmpeg")
+FFPROBE = os.environ.get("FFPROBE_BIN", "ffprobe")
+
+# ---------- 转写后端（两个都 try 导入，运行时自动选） ----------
 try:
     import mlx_whisper
     HAVE_MLX = True
 except Exception:
     HAVE_MLX = False
+
+try:
+    import whisper as openai_whisper
+    HAVE_OW = True
+except Exception:
+    HAVE_OW = False
 
 try:
     import opencc
@@ -50,9 +61,57 @@ except Exception:
     CC = None
     HAVE_CC = False
 
-MODEL = "mlx-community/whisper-large-v3-turbo"
-DEFAULT_FONT = "/System/Library/Fonts/STHeiti Medium.ttc"   # macOS 华文黑体（清晰、有中文字形）
+MODEL_MLX = "mlx-community/whisper-large-v3-turbo"
+MODEL_OW = "large-v3-turbo"
 SENT_END = "。！？!?；;\n"   # 断句标点
+
+
+# ======================================================================
+# 字体：按操作系统自动探测一个可用的中文字体
+# ======================================================================
+def find_default_font():
+    sysname = platform.system().lower()
+    if sysname == "darwin":
+        candidates = [
+            "/System/Library/Fonts/STHeiti Medium.ttc",
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        ]
+    elif sysname == "windows":
+        candidates = [
+            "C:/Windows/Fonts/msyh.ttc",     # 微软雅黑
+            "C:/Windows/Fonts/msyhbd.ttc",   # 微软雅黑 Bold
+            "C:/Windows/Fonts/simhei.ttf",   # 黑体
+            "C:/Windows/Fonts/simsun.ttc",   # 宋体
+        ]
+    else:  # linux / other
+        candidates = [
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+        ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+DEFAULT_FONT = find_default_font()
+
+
+def _resolve_backend(backend):
+    if backend == "mlx" and HAVE_MLX:
+        return "mlx"
+    if backend == "openai" and HAVE_OW:
+        return "openai"
+    # auto
+    if HAVE_MLX:
+        return "mlx"
+    if HAVE_OW:
+        return "openai"
+    return None
 
 
 # ======================================================================
@@ -60,7 +119,7 @@ SENT_END = "。！？!?；;\n"   # 断句标点
 # ======================================================================
 def has_subtitle_stream(video):
     out = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries",
+        [FFPROBE, "-v", "error", "-show_entries",
          "stream=codec_type", "-of", "default=noprint_wrappers=1", video],
         capture_output=True, text=True)
     return "subtitle" in out.stdout
@@ -69,7 +128,7 @@ def has_subtitle_stream(video):
 def extract_srt(video, tmp_srt):
     """抽软字幕流为 srt（取第一条 subtitle 流）。"""
     r = subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-i", video, "-map", "0:s:0",
+        [FFMPEG, "-y", "-v", "error", "-i", video, "-map", "0:s:0",
          "-c:s", "srt", tmp_srt], capture_output=True, text=True)
     return r.returncode == 0 and os.path.exists(tmp_srt) and os.path.getsize(tmp_srt) > 0
 
@@ -93,21 +152,33 @@ def parse_srt(path):
     return segs
 
 
-def asr_transcribe(video):
-    """整段 ASR（短视频直接用，不必切 30 分钟段）。返回 mlx_whisper 的 segments。"""
-    if not HAVE_MLX:
-        sys.exit("未安装 mlx_whisper，请先：python -m pip install mlx-whisper opencc-python-reimplemented")
+def asr_transcribe(video, backend="auto"):
+    """整段 ASR（短视频直接用，不必切 30 分钟段）。返回 whisper 的 segments。
+    按 backend 自动选择 mlx-whisper（Apple Silicon GPU）或 openai-whisper。"""
+    backend = _resolve_backend(backend)
+    if backend is None:
+        sys.exit("未安装听写后端，请先：pip install mlx-whisper（Apple Silicon）"
+                 " 或 pip install openai-whisper（Windows / Linux）")
     audio = tempfile.mktemp(suffix=".wav")
     # 抽 16k 单声道给模型
-    r = subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", video,
+    r = subprocess.run([FFMPEG, "-y", "-v", "error", "-i", video,
                         "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", audio],
                        capture_output=True, text=True)
     if r.returncode != 0:
         sys.exit("抽音频失败：" + r.stderr[:300])
-    res = mlx_whisper.transcribe(
-        audio, path_or_hf_repo=MODEL, language="zh",
-        initial_prompt="以下是一段普通话视频，含有出镜解说与字幕。请使用简体中文输出，并带上正常的中文标点。",
-        condition_on_previous_text=False, word_timestamps=True, verbose=False)
+
+    initial_prompt = ("以下是一段普通话视频，含有出镜解说与字幕。请使用简体中文输出，"
+                      "并带上正常的中文标点。")
+    if backend == "mlx":
+        res = mlx_whisper.transcribe(
+            audio, path_or_hf_repo=MODEL_MLX, language="zh",
+            initial_prompt=initial_prompt, condition_on_previous_text=False,
+            word_timestamps=True, verbose=False)
+    else:
+        model = openai_whisper.load_model(MODEL_OW)
+        res = model.transcribe(
+            audio, language="zh", initial_prompt=initial_prompt,
+            condition_on_previous_text=False, word_timestamps=True, verbose=False)
     os.unlink(audio)
     return res.get("segments", [])
 
@@ -198,7 +269,7 @@ def to_sents_from_words(words, max_chars=48):
     return sents
 
 
-def get_sentences(video, max_chars=48):
+def get_sentences(video, max_chars=48, backend="auto"):
     tmp = tempfile.mktemp(suffix=".srt")
     if has_subtitle_stream(video) and extract_srt(video, tmp):
         print("  ✓ 检测到软字幕流，直接提取")
@@ -207,8 +278,8 @@ def get_sentences(video, max_chars=48):
         if segs:
             return segs
         print("  （软字幕为空，回退 ASR）")
-    print("  → ASR 听写中（mlx-whisper, Apple GPU，词级时间戳）...")
-    segs = asr_transcribe(video)
+    print("  → ASR 听写中（backend=%s）..." % _resolve_backend(backend))
+    segs = asr_transcribe(video, backend)
     words = [w for s in segs for w in (s.get("words") or []) if (w.get("word") or "").strip()]
     if words:
         sents = to_sents_from_words(words, max_chars)
@@ -296,7 +367,7 @@ def make_frame_card(video, sent, idx, out_dir, scale_w, font_path, quality):
     mid = (sent["start"] + sent["end"]) / 2.0
     tmp = os.path.join(out_dir, f"_f{idx:03d}.jpg")
     vf = f"scale={scale_w}:-1" if scale_w else "null"
-    r = subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{mid:.3f}",
+    r = subprocess.run([FFMPEG, "-y", "-v", "error", "-ss", f"{mid:.3f}",
                         "-i", video, "-frames:v", "1", "-vf", vf, "-q:v", "2", tmp],
                        capture_output=True, text=True)
     if r.returncode != 0 or not os.path.exists(tmp):
@@ -313,7 +384,7 @@ def make_frame_card(video, sent, idx, out_dir, scale_w, font_path, quality):
 def extract_frame(video, t, scale_w, tmp):
     """在 t 秒处截一帧到 tmp（不重绘，保留画面原烧录字幕）。"""
     vf = f"scale={scale_w}:-1" if scale_w else "null"
-    r = subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{t:.3f}",
+    r = subprocess.run([FFMPEG, "-y", "-v", "error", "-ss", f"{t:.3f}",
                         "-i", video, "-frames:v", "1", "-vf", vf, "-q:v", "3", tmp],
                        capture_output=True, text=True)
     return r.returncode == 0 and os.path.exists(tmp)
@@ -432,7 +503,7 @@ def detect_subtitle_phrases(video, scale_w=1080, band=(0.705, 0.795), fps=3.0,
 
     tmpdir = tempfile.mkdtemp(prefix="subdet_")
     pat = os.path.join(tmpdir, "f_%05d.jpg")
-    cmd = ["ffmpeg", "-nostdin", "-v", "error", "-i", video,
+    cmd = [FFMPEG, "-nostdin", "-v", "error", "-i", video,
            "-vf", f"fps={fps},scale={scale_w}:-1", "-q:v", "3", pat]
     subprocess.run(cmd, capture_output=True)
     files = sorted(os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.startswith("f_"))
@@ -447,7 +518,7 @@ def detect_subtitle_phrases(video, scale_w=1080, band=(0.705, 0.795), fps=3.0,
             w, h = im.size
             crop = im.crop((int(w * 0.08), int(h * band[0]), int(w * 0.92), int(h * band[1])))
             e = crop.filter(ImageFilter.FIND_EDGES)
-            sig = list(e.resize((W, H)).get_flattened_data())
+            sig = list(e.resize((W, H)).getdata())
             sigs.append(sig)
             edges.append(sum(sig) / len(sig))
         except Exception:
@@ -497,7 +568,8 @@ def detect_subtitle_phrases(video, scale_w=1080, band=(0.705, 0.795), fps=3.0,
 # main
 # ======================================================================
 def main():
-    ap = argparse.ArgumentParser(description="成片视频 → 每句字幕一张图")
+    global FFMPEG, FFPROBE
+    ap = argparse.ArgumentParser(description="成片视频 → 每句字幕一张图（跨平台 / 任意 agent 可用）")
     ap.add_argument("video")
     ap.add_argument("--out-dir", default=None)
     ap.add_argument("--mode", choices=["raw", "sentence", "hybrid", "frame", "textcard"], default="raw",
@@ -507,13 +579,24 @@ def main():
     ap.add_argument("--sub-band", default="0.705,0.795", help="raw 字幕行纵向范围（占画面高比例，逗号分隔）")
     ap.add_argument("--detect-fps", type=float, default=3.0, help="raw 字幕检测采样帧率")
     ap.add_argument("--diff-thresh", type=float, default=9.5, help="raw 换句判定阈值（越大越钝，边缘图差值）")
-    ap.add_argument("--font", default=DEFAULT_FONT)
+    ap.add_argument("--backend", choices=["auto", "mlx", "openai"], default="auto",
+                     help="听写后端：auto=优先 mlx-whisper，否则 openai-whisper；mlx=仅 Apple Silicon；openai=跨平台")
+    ap.add_argument("--font", default=None, help="中文字体路径（不指定则按系统自动探测）")
+    ap.add_argument("--ffmpeg", default=None, help="ffmpeg 可执行文件路径（默认取 PATH）")
     ap.add_argument("--quality", type=int, default=85)
     ap.add_argument("--dry-run", action="store_true", help="只打印会出多少图，不生成")
     args = ap.parse_args()
 
+    if args.ffmpeg:
+        FFMPEG = args.ffmpeg
+        FFPROBE = os.path.join(os.path.dirname(args.ffmpeg), "ffprobe") \
+            if os.path.exists(os.path.join(os.path.dirname(args.ffmpeg), "ffprobe")) \
+            else "ffprobe"
+
     if not os.path.exists(args.video):
         sys.exit(f"找不到视频：{args.video}")
+
+    font_path = args.font or DEFAULT_FONT
 
     out_dir = args.out_dir or (
         os.path.join(os.path.dirname(args.video),
@@ -522,7 +605,7 @@ def main():
 
     print(f"\n视频：{args.video}")
     print(f"输出：{out_dir}")
-    sents = get_sentences(args.video, args.max_chars)
+    sents = get_sentences(args.video, args.max_chars, backend=args.backend)
     print(f"→ ASR 切出 {len(sents)} 句")
 
     def asr_text_at(t):
@@ -572,13 +655,13 @@ def main():
                 "mode": args.mode, "count": len(sents), "images": []}
     for i, s in enumerate(sents, 1):
         if args.mode == "hybrid":
-            out = make_hybrid_card(args.video, s, i, out_dir, args.scale_w, args.font, args.quality)
+            out = make_hybrid_card(args.video, s, i, out_dir, args.scale_w, font_path, args.quality)
         elif args.mode in ("raw", "sentence"):
             out = make_raw_card(args.video, s, i, out_dir, args.scale_w, args.quality)
         elif args.mode == "frame":
-            out = make_frame_card(args.video, s, i, out_dir, args.scale_w, args.font, args.quality)
+            out = make_frame_card(args.video, s, i, out_dir, args.scale_w, font_path, args.quality)
         else:
-            out = make_text_card(s, i, out_dir, args.font, args.quality)
+            out = make_text_card(s, i, out_dir, font_path, args.quality)
         if out:
             manifest["images"].append({
                 "file": os.path.basename(out),

@@ -1,6 +1,6 @@
 ---
 name: video-subtitle-slicer
-description: 把「成片视频」（多为竖屏、烧录字幕）切成多张图片，每图一条完整字幕，方便拼台词做成图文笔记（小红书等）。默认 raw 模式用「字幕行边缘变化检测」逐条抓烧录字幕（不需 OCR），一套图连起来就是完整逐字稿；其余模式用 mlx-whisper 词级时间戳听写切句。五种模式：raw（按烧录字幕逐条出图，默认）/ hybrid（画面+叠完整台词）/ frame（叠字幕，适合无字幕原片）/ sentence（按 ASR 整句）/ textcard（纯文字卡）。离线免费，走 Apple Silicon GPU。安装与跨平台说明见 README.md。
+description: 把「成片视频」（多为竖屏、烧录字幕）切成多张图片，每图一条完整字幕，方便拼台词做成图文笔记（小红书等）。默认 raw 模式用「字幕行边缘变化检测」逐条抓烧录字幕（不需 OCR），一套图连起来就是完整逐字稿；其余模式用 whisper 词级时间戳听写切句。五种模式：raw（按烧录字幕逐条出图，默认）/ hybrid（画面+叠完整台词）/ frame（叠字幕，适合无字幕原片）/ sentence（按 ASR 整句）/ textcard（纯文字卡）。离线免费，不依赖任何 API Key。跨平台（Windows / macOS / Linux），听写后端自动适配 mlx-whisper（Apple Silicon）与 openai-whisper（其它平台）。纯命令行，可被任意 agent / 系统直接调用，详见 README.md。
 agent_created: true
 ---
 
@@ -8,9 +8,11 @@ agent_created: true
 
 两种取字幕路线：
 - **raw（默认）**：不靠 ASR，直接**检测画面里烧录字幕换行**（字幕行边缘图变化），每换一条字幕出一张图 → 一套图连起来就是**完整逐字稿**，文字与原片 100% 一致，不需要 OCR。
-- 其余模式：mlx-whisper 词级时间戳听写 → 切句 → 按真实时间取帧（用于无烧录字幕的原片，或要叠完整台词）。
+- 其余模式：whisper 词级时间戳听写 → 切句 → 按真实时间取帧（用于无烧录字幕的原片，或要叠完整台词）。
 
 离线、免费、不需要任何 API Key。竖屏成片（如 1440×2560）直接出 1080 宽图。
+
+本技能是**纯命令行工具**，不绑定任何 agent 框架：WorkBuddy / Claude / Codex / 任意能跑 Python+Shell 的环境都可调用，输出结构化 `manifest.json` 便于二次加工。详细安装与跨平台说明见 `README.md`。
 
 ## 何时用
 
@@ -66,12 +68,12 @@ $PY $S/slice_subtitles.py "<成片>.mp4" --out-dir <dir> --scale-w 1080 --max-ch
 ```bash
 PY=python3
 $PY -c "import mlx_whisper, opencc, PIL; print('ok')"   # 缺就装：pip install -r requirements.txt
-ffmpeg -version                                          # homebrew / apt，需另行安装
+ffmpeg -version                                          # brew / apt / 官网下载，需另行安装
 ```
 
-- Apple Silicon → **mlx-whisper**，走 GPU。模型 `mlx-community/whisper-large-v3-turbo`（约 1.6GB，首次自动下载）。
-- 非 Apple Silicon：把脚本里的 `mlx_whisper` 换成 `openai-whisper`（逻辑不变），其余依赖同 `requirements.txt`。
-- 中文字体：默认尝试 macOS 系统字体（`/System/Library/Fonts/STHeiti Medium.ttc` 华文黑体）。**非 macOS 改 `--font` 指向本地中文字体**（如 Noto Sans CJK SC），否则退化为无字幕样式。
+- **听写后端自适应**：Apple Silicon → `mlx-whisper`（GPU）；其它平台（Windows / Linux / Intel Mac）→ `openai-whisper`（CPU）。脚本运行时自动探测，也可用 `--backend auto|mlx|openai` 显式指定。
+- **ffmpeg / ffprobe**：默认取 `PATH`；不在 PATH 时用环境变量 `FFMPEG_BIN` / `FFPROBE_BIN`，或运行时 `--ffmpeg /path/to/ffmpeg` 指定。
+- **中文字体**：按操作系统自动探测（macOS 华文黑体 / 苹方；Windows 微软雅黑 / 黑体；Linux Noto / 文泉驿）。找不到会退化为无标签样式，可用 `--font /path/to/cjk.ttf` 强制指定。
 
 ## 关键设计
 
@@ -103,11 +105,11 @@ ffmpeg -version                                          # homebrew / apt，需�
 
 ## 交付
 
-- 图多时别逐张给（几十张会刷屏）。用 `scripts/make_sheet.py <字幕图目录>` 一键生成「字幕总览」长图（每页 18 行 + 序号 + 时间），用户一眼读完整个逐字稿：
+- 图多时别逐张给（几十张会刷屏）。用 `scripts/make_sheet.py <字幕图目录>` 一键生成「字幕总览」长图（每页 18 行 + 序号 + 时间），一眼读完整个逐字稿：
   ```bash
   $PY $S/make_sheet.py "<成片名>_字幕图" --per-page 18 --band 0.700,0.800
   ```
-- 再 `present_files` 给 2–3 张样图 + 总览长图 + manifest。
+- 把图片路径 + `manifest.json` 回传给宿主环境（如 WorkBuddy 的 `present_files` / 文件上传 / 推送给用户）。
 - 提醒：图片按时间顺序编号，可直接拖进小红书图文编辑器；小红书单篇最多 18 图，几十张这种要挑。
 
 ## 已知限制
@@ -116,3 +118,4 @@ ffmpeg -version                                          # homebrew / apt，需�
 - ASR 路线不认画面文字（whisper 是听不是看），听写与原字幕可能有出入（如 AdTech 听成 iTech），以 `hybrid`/`textcard` 展示的听写为准。
 - 本机无中文 OCR，无法把 raw 的图转成文本；若同时要"图文 + 可复制文字"，raw 出图 + 复用转写流程的逐字稿最省。
 - 多人快速对话时，一句可能被切得过碎或过粗——用 `--max-chars` 和 `--dry-run` 先调，再正式出图。
+- `openai-whisper` 在非 Apple Silicon 平台走 CPU，长视频较慢；可缩短输入片段或换用更快后端。

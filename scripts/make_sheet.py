@@ -7,31 +7,63 @@
   python make_sheet.py <字幕图目录>            # 默认每页 18 行
   python make_sheet.py <字幕图目录> --per-page 24
   python make_sheet.py <字幕图目录> --band 0.700,0.800   # 只裁字幕行（比例）
+  python make_sheet.py <字幕图目录> --font /path/to/cjk.ttf
 
 输出：<目录>/总览_1.jpg, 总览_2.jpg ...
 没装中文字体会退化为无标签（仅图片）。
+
+跨平台：中文字体按操作系统自动探测（macOS / Windows / Linux），可用 --font 覆盖。
 """
 import argparse
 import json
 import os
+import platform
 import sys
 
 from PIL import Image, ImageDraw, ImageFont
 
-FONT_CANDIDATES = [
-    "/System/Library/Fonts/STHeiti Medium.ttc",
-    "/System/Library/Fonts/PingFang.ttc",
-    "/System/Library/Fonts/Hiragino Sans GB.ttc",
-]
 
-
-def load_font(size):
-    for p in FONT_CANDIDATES:
+def find_default_font():
+    """按操作系统自动探测一个可用的中文字体（跨平台）。"""
+    sysname = platform.system().lower()
+    if sysname == "darwin":
+        candidates = [
+            "/System/Library/Fonts/STHeiti Medium.ttc",
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        ]
+    elif sysname == "windows":
+        candidates = [
+            "C:/Windows/Fonts/msyh.ttc",     # 微软雅黑
+            "C:/Windows/Fonts/msyhbd.ttc",   # 微软雅黑 Bold
+            "C:/Windows/Fonts/simhei.ttf",   # 黑体
+            "C:/Windows/Fonts/simsun.ttc",   # 宋体
+        ]
+    else:  # linux / other
+        candidates = [
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+        ]
+    for p in candidates:
         if os.path.exists(p):
-            try:
-                return ImageFont.truetype(p, size)
-            except Exception:
-                continue
+            return p
+    return None
+
+
+DEFAULT_FONT = find_default_font()
+
+
+def load_font(path, size):
+    if not path or not os.path.exists(path):
+        return ImageFont.load_default()
+    for idx in (1, 0):
+        try:
+            return ImageFont.truetype(path, size, index=idx)
+        except Exception:
+            continue
     return ImageFont.load_default()
 
 
@@ -47,6 +79,7 @@ def main():
     ap.add_argument("--band", default="0.700,0.800", help="裁字幕行的纵向比例")
     ap.add_argument("--width", type=int, default=1080, help="总览图宽度")
     ap.add_argument("--quality", type=int, default=88)
+    ap.add_argument("--font", default=None, help="中文字体路径（不指定则按系统自动探测）")
     args = ap.parse_args()
 
     mpath = os.path.join(args.dir, "manifest.json")
@@ -57,7 +90,7 @@ def main():
         sys.exit("manifest 里没有图片")
 
     y0, y1 = (float(x) for x in args.band.split(","))
-    font = load_font(int(args.width * 0.032))
+    font = load_font(args.font or DEFAULT_FONT, int(args.width * 0.032))
     label_w = int(args.width * 0.14)
     gap = 10
 

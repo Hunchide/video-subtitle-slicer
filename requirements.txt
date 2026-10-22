@@ -1,7 +1,22 @@
-# 听写后端（Apple Silicon 走 GPU）
-mlx-whisper
-# 繁→简中文
+# ============================================================
+# video-subtitle-slicer 依赖
+# 跨平台：本仓库是纯命令行工具，Windows / macOS / Linux 均可用。
+# ============================================================
+
+# 图片处理（必须）
+Pillow>=9.0
+
+# 繁体中文转简体（必须）
 opencc-python-reimplemented
-# 图片处理
-Pillow
-# 注：ffmpeg 需另行安装（macOS: brew install ffmpeg；Linux: apt install ffmpeg）
+
+# ---- 听写后端：二选一（脚本运行时自动探测，也可 --backend 指定）----
+# A) Apple Silicon（macOS）推荐：走 GPU，速度快
+mlx-whisper
+# B) 跨平台通用（Windows / Linux / 非 Apple Silicon 的 macOS）：CPU 运行
+# openai-whisper
+
+# ---- 外部二进制（不通过 pip 安装，需系统自带 / 另行安装）----
+# ffmpeg / ffprobe：
+#   macOS : brew install ffmpeg
+#   Linux : apt install ffmpeg   (或 dnf / pacman 等)
+#   Windows: 从 https://ffmpeg.org 下载，加入 PATH；或用 FFMPEG_BIN 环境变量指向
