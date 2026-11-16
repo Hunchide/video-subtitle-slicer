@@ -2,170 +2,153 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green) ![Platform](https://img.shields.io/badge/platform-Windows%20%2F%20macOS%20%2F%20Linux-0078D4) ![Python](https://img.shields.io/badge/python-3.9%2B-blue) ![Offline](https://img.shields.io/badge/works-offline-OK-success) ![Agent](https://img.shields.io/badge/agent--agnostic-9cf)
 
-把「成片视频」（多为竖屏、已烧录字幕）切成多张图片，**每图一句完整字幕**，方便拼台词做成图文笔记（小红书 / 公众号等）。
+把「成片视频」（多为竖屏、已烧录字幕）切成**每条字幕一张图**，再拼成 1080×1440 图文笔记（小红书 / 公众号等）。
 
-- **默认 `raw` 模式**：不靠语音识别、不需要 OCR，直接用「字幕行边缘变化检测」逐条抓画面里烧录的字幕 —— 一套图按时间顺序连起来就是**完整逐字稿**，文字与原片 100% 一致。
-- 其余模式用 whisper 词级时间戳听写切句，适合无烧录字幕的纯口播原片，或需要叠「完整台词」的场合。
+**首选 OCR 路线**：逐帧读取画面里的烧录字幕文字，**同字才算同一句** —— 不漏句、不重复、文字与原片一致，且能拿到可复制的文本。另有边缘检测（快但会漏）、whisper ASR（无字幕原片）、纯文字卡等备选路线。
 
-离线、免费、不需要任何 API Key。
-
-**纯命令行设计**：任何能调用 Python / Shell 的环境都能直接用 —— 本地终端、CI、或任意 agent / AI 框架（WorkBuddy、Claude、Codex、AutoGPT 等）都可直接编排，不绑定任何特定平台。
+离线、免费、不需要任何 API Key。**纯命令行、agent 无关**：任何能调用 Python 的环境（本地终端 / CI / WorkBuddy / Claude / Codex / 任意自动化框架）都能直接编排，不绑定任何特定平台。
 
 ---
 
-## 五种模式
+## 能做什么
 
-| 模式 | 产出 | 什么时候用 |
-|---|---|---|
-| `raw`（默认） | **检测烧录字幕换行，每条字幕一张图**；画面原样，不重绘 | 成片有烧录字幕（绝大多数情况）；要完整逐字稿 |
-| `hybrid` | 上半视频画面 + 底部模糊底条叠 **ASR 完整台词** | 想要「一句完整话」压在一张图上，不介意叠字 |
-| `frame` | 视频帧 + 脚本叠加字幕（半透明条 + 白字描边） | 原片**没有**烧录字幕（纯口播） |
-| `sentence` | 按 ASR 整句截中点帧（一句话一张，粒度粗） | 只想每句话一张、不要逐条字幕 |
-| `textcard` | 纯文字卡（浅底 + 大字台词 + 时间码），不带画面 | 想要最干净、零歧义的排版 |
+1. **切字幕图**：成片 → 每条字幕一张 `001.jpg / 002.jpg …` + `manifest.json`（含 OCR 原文、时间码、字幕条位置、镜头类型）。
+2. **拼台词**：挑台词区间（`12-17` 一行 = 一页）→ 出 1080×1440 竖图，头图 + 字幕条竖堆；或「纯字幕」路线只留字幕条。
+3. **出总览**：几十张图拼成「字幕总览」长图，一眼读完整个逐字稿。
+4. **字幕清单**：导出带序号 / 时间码 / OCR 原文的清单，人工挑句留钩子。
 
 ---
 
-## 安装依赖
+## 安装
 
-需要 **Python 3.9+** 与 **ffmpeg**。
+需要 **Python 3.9+** 与 **ffmpeg / ffprobe**。
 
 ```bash
-# 1. 建虚拟环境并装 Python 依赖
+# 1. 建虚拟环境
 python3 -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-```
+source .venv/bin/activate        # Windows PowerShell: .venv\Scripts\Activate.ps1
 
-`requirements.txt` 默认装 **mlx-whisper**（Apple Silicon 走 GPU）。非 Apple Silicon 机器（Windows / Linux / Intel Mac）请改用 **openai-whisper**：把 `requirements.txt` 里 `mlx-whisper` 注释掉、放开 `openai-whisper` 那行，再 `pip install` 即可。脚本运行时会自动探测已安装的后端，也可用 `--backend auto|mlx|openai` 显式指定。
+# 2. Python 依赖
+pip install -r requirements.txt
+
+# 3. 听写后端二选一（只有走 ASR 路线才需要；OCR 路线不需要）
+#    Apple Silicon : mlx-whisper（requirements 默认启用，GPU 快）
+#    Windows/Linux : 注释掉 mlx-whisper，放开 openai-whisper 那行，再 pip install
+```
 
 ### 安装 ffmpeg（按系统）
 
-| 系统 | 命令 / 方式 |
+| 系统 | 方式 |
 |---|---|
 | macOS | `brew install ffmpeg` |
-| Linux | `sudo apt install ffmpeg`（或 `dnf` / `pacman` 等） |
-| Windows | 从 [ffmpeg.org](https://ffmpeg.org) 下载，解压后把 `bin/` 加入 `PATH`；或用 `--ffmpeg` 参数 / `FFMPEG_BIN` 环境变量指向 `ffmpeg.exe` |
+| Linux | `sudo apt install ffmpeg`（或 `dnf` / `pacman`） |
+| Windows | [ffmpeg.org](https://ffmpeg.org) 下载解压，`bin/` 加入 PATH |
 
-> 若 ffmpeg 不在 `PATH` 里，可用环境变量 `FFMPEG_BIN` / `FFPROBE_BIN`，或运行时 `--ffmpeg /path/to/ffmpeg` 指定。
+不在 PATH 时，用环境变量 `FFMPEG_BIN` / `FFPROBE_BIN`，或脚本 `--ffmpeg` 参数指向可执行文件（Windows 常见 `C:\ffmpeg\bin\ffmpeg.exe`）。
 
-### 中文字体（按系统自动探测）
+### 中文字体（自动探测）
 
-脚本会按操作系统自动找一个中文字体：
-
-- **macOS**：华文黑体 / 苹方 / Hiragino
-- **Windows**：微软雅黑 / 黑体 / 宋体
-- **Linux**：Noto Sans CJK / 文泉驿 / DroidSansFallback
-
-找不到时会退化为无字幕标签样式（图片照常出）。可用 `--font /path/to/cjk.ttf` 强制指定本机中文字体。
+脚本通过 `_compat.py` 按系统自动找中文字体：**macOS** 华文黑体 / 苹方；**Windows** 微软雅黑 / 黑体 / 宋体；**Linux** Noto Sans CJK / 文泉驿 / DejaVu。找不到时退化为默认字体。可用 `--font` 或环境变量 `CJK_FONT` 强制指定。
 
 ---
 
-## 用法
+## 快速开始
 
 ```bash
-PY=python3                      # 或激活 venv 后直接 python
+PY=python3
 S=./scripts
 
-# 默认 raw：检测烧录字幕换行，每条字幕一张图（整套 = 完整逐字稿）
+# ① 首选：OCR 扫字幕，一句不漏（默认 4fps / 540 宽抽帧，CPU 即可；7 分钟片约 6 分钟）
+$PY $S/scan_captions.py "<成片>.mp4"
+#    先只看时间轴、不写真图（很快）
+$PY $S/scan_captions.py "<成片>.mp4" --review
+#    缓存 OCR 结果，调参重出图不用重识别
+$PY $S/scan_captions.py "<成片>.mp4" --json ocr_cache.json
+
+# ② 备选（无 OCR 环境）：边缘变化检测，快但会漏句
 $PY $S/slice_subtitles.py "<成片>.mp4"
 
-# 字幕行位置不准时先校准（纵向比例，逗号分隔）
-$PY $S/slice_subtitles.py "<成片>.mp4" --sub-band 0.705,0.795
+# ③ 写台词清单 → 人工写分页文件 → 拼台词出图
+$PY $S/make_script_list.py --subdir "<成片名>_字幕图" --prefix 上期
+#    手写 pages.txt：一行一页，如 "4-7" / "8,9,10" / "12-17"
+$PY $S/build_pages.py "<成片>.mp4" --subdir "<成片名>_字幕图" \
+    --pages pages.txt --outdir 成图 --prefix 上期
 
-# 切太碎 / 太粗时调灵敏度（边缘图差值，越大越钝；默认 9.5）
-$PY $S/slice_subtitles.py "<成片>.mp4" --diff-thresh 9.5 --detect-fps 3
-
-# 画面 + 完整台词（ASR 叠字）
-$PY $S/slice_subtitles.py "<成片>.mp4" --mode hybrid
-
-# 纯文字卡（干净排版）
-$PY $S/slice_subtitles.py "<成片>.mp4" --mode textcard
-
-# 先看会出多少张图、不生成（raw 也会先跑一遍检测）
-$PY $S/slice_subtitles.py "<成片>.mp4" --dry-run
-
-# 指定听写后端 / 字体（跨平台常见）
-$PY $S/slice_subtitles.py "<成片>.mp4" --backend openai --font /usr/share/fonts/.../NotoSansCJK-Regular.ttc
-
-# 自定义：输出目录 / 截帧宽度 / 单句最大字数
-$PY $S/slice_subtitles.py "<成片>.mp4" --out-dir <dir> --scale-w 1080 --max-chars 48
+# ④ 字幕总览长图
+$PY $S/make_sheet.py "<成片名>_字幕图"
 ```
 
-输出目录默认在视频同目录 `<成片名>_字幕图/`，内含：
-
-- `001.jpg` / `002.jpg` … 按时间顺序，**raw 每张就是一条烧录字幕**
-- `manifest.json`：`{video, mode, count, images:[{file, text, start, end}]}`
-  - raw 模式下 `text` 是**对应时间段的 ASR 参考文本**（一句 ASR 常覆盖多张图，仅作检索参考；真实字幕以图片为准）
-
-### 字幕总览长图
-
-图多时别逐张看。用 `make_sheet.py` 一键生成「字幕总览」长图（每页 18 行 + 序号 + 时间），一眼读完整个逐字稿：
-
-```bash
-$PY $S/make_sheet.py "<成片名>_字幕图" --per-page 18 --band 0.700,0.800
-```
-
-输出 `总览_1.jpg`、`总览_2.jpg` … 在目录下。
-
-> 提示：图片按时间顺序编号，可直接拖进小红书图文编辑器。小红书单篇最多 18 图，几十张需自行挑选合并。
+`scan_captions.py` 输出 `<成片名>_字幕图/`，内含 `001.jpg` / `002.jpg` … 和 `manifest.json`。
 
 ---
 
-## 作为 Agent / 自动化的一部分使用（可选）
+## 脚本一览
 
-本工具没有任何框架依赖，输出结构化的 `manifest.json`，方便任意程序读取与二次加工：
+| 脚本 | 作用 |
+|---|---|
+| `scan_captions.py` | **首选**：OCR 读烧录字幕，逐帧识别、按文字归并，一句不漏，产出字幕图 + manifest |
+| `slice_subtitles.py` | 备选/多模式：raw 边缘检测、hybrid/frame/sentence/textcard（ASR 路线）。`--backend auto\|mlx\|openai` |
+| `make_script_list.py` | 生成台词清单（图片条 + Markdown 表格，带序号 / 时间 / OCR 原文） |
+| `build_pages.py` | 拼台词成 1080×1440 页：头图 + 字幕条竖堆，支持大字卡、双行条、分页 |
+| `pure_caption.py` | 纯字幕路线：只抠字幕条贴纯白画布，板书另做 |
+| `strip_stack.py` | 底层横带摞图（build_pages 依赖，一般不强调用） |
+| `lineup.py` / `batch_lineup.py` | 旧版每 3 句一张「底图+字幕条」拼图 / 批量版 |
+| `compose.py` | 把字幕图拼成竖排长图或宫格 |
+| `make_sheet.py` | 字幕总览长图（每页 N 行 + 序号 + 时间） |
+| `_compat.py` | **跨平台兼容层**：字体探测、ffmpeg 路径、Pillow 兼容、ASR 双后端 |
+
+> 每条命令的完整参数：`python <脚本>.py --help`。拼台词的版式决策树、踩坑与定稿参数见 [SKILL.md](SKILL.md)。
+
+---
+
+## manifest.json 结构（agent 集成接口）
 
 ```json
 {
   "video": "/abs/path/to/成片.mp4",
-  "mode": "raw",
+  "mode": "ocr",
+  "fps": 4,
   "count": 12,
   "images": [
-    {"file": "001.jpg", "text": "（ASR 参考文本）", "start": 1.20, "end": 4.80},
-    {"file": "002.jpg", "text": "……", "start": 5.10, "end": 9.30}
+    {
+      "file": "001.jpg",
+      "text": "OCR 读出的字幕原文",
+      "kind": "caption",
+      "start": 1.20,
+      "end": 4.80,
+      "bar": [0.70, 0.78],
+      "ocr_score": 0.92,
+      "scene": "person"
+    }
   ]
 }
 ```
 
-Agent 典型编排方式：
+字段说明：
+- `text`：OCR 读出的烧录字幕原文（拼台词文案可直接用）；`kind=caption` 是字幕，`kind=slide` 是无字幕的幻灯片/大字卡，`text` 只是版面摘要。
+- `bar`：字幕条纵向位置（占高比例），拼图时作锚点，避免切错横带。
+- `scene`：`person`（真人出镜）或 `board`（板书/提纲页）。普通拼台词头图须选 `person` 帧。
 
-1. 调用 `slice_subtitles.py` 生成图片目录 + `manifest.json`。
-2. 读取 `manifest.json` 拿到每图的时间码与参考文本，决定发布顺序 / 文案。
-3. 调用 `make_sheet.py` 生成「字幕总览」长图，用于预览或一次性发布。
-4. 把图片路径回传给宿主环境（如 `present_files` / 上传 / 推送）。
-
-> 可作为 **WorkBuddy 技能** 使用：目录结构符合 `SKILL.md` 规范，把 `SKILL.md` + `scripts/` 放进 `~/.workbuddy/skills/video-subtitle-slicer/` 即可启用。也可在 Claude / Codex / 其它 agent 里直接用 shell 调用脚本，无需任何改动。
+Agent 典型编排：① 调 `scan_captions.py` 出图 + manifest → ② 读 manifest 拿文本/时间码决定文案与分页 → ③ 调 `build_pages.py` / `pure_caption.py` 出成图 → ④ 调 `make_sheet.py` 出总览 → ⑤ 把图片路径回传宿主（上传 / 推送 / 展示）。
 
 ---
 
 ## 关键设计
 
-### raw：烧录字幕逐条检测（默认，不需 OCR）
-
-1. 按 `--detect-fps`（默认 3）抽帧 → 裁**字幕行**（`--sub-band`，默认 0.705–0.795）→ 转**边缘图**（`FIND_EDGES`）缩成 176×36 签名。
-2. **为什么用边缘不用灰度**：卡拉OK逐词高亮只改字的颜色、不改字形轮廓，边缘图对高亮免疫。实测同一句不同高亮边缘差 ≈5.6，不同句 ≈14，区分度约 2.5×。
-3. 相邻帧边缘差 > `--diff-thresh`（默认 9.5）即认为**换了一条字幕** → 分组。
-4. 过滤：时长 < 0.45s、或该组平均边缘强度 < 12（空镜 / 纯背景）→ 丢弃。
-5. 每条字幕取组**中段帧**做代表（此时整行字幕已完整显示），并跳过与上一条几乎相同（差 < 6）的重复。
-6. 结果：一套图 = 完整逐字稿，文字与原片 100% 一致。
-
-### 其它模式（ASR 路线）
-
-1. **词级时间戳**：`word_timestamps=True`，句子 start/end 取真实首词 / 末词时间（按片段平均分配会导致截到下一句）。
-2. **断句**：句末标点必断；≥ `--max-chars` 且落在逗号处则断；超长硬断兜底。
-3. **取帧**：`(start+end)/2` 中点帧。
-4. 有软字幕流（srt/ass）优先 `ffmpeg` 抽 srt；无则 ASR。whisper 默认繁体 → `opencc` `t2s`。
-5. **听写后端自适应**：Apple Silicon 优先 `mlx-whisper`（GPU）；其它平台 `openai-whisper`（CPU）。`--backend` 可强制。
+- **为什么 OCR 优先**：早先靠「边缘变化 + IoU」猜换句，实测 7 分钟片漏 108 秒（字形相近句被并、字幕条位置跳变整段漏）。读字就没有这些问题——文字即身份。
+- **双行字幕**：相邻、水平居中、行距小的两个 OCR 框合并成一条。
+- **代表帧**：取组内 50%~80% 区间、且该帧 OCR 文字等于整组的那一帧（不选置信度最高帧——最高分常在字幕刚切换时，出图系统性偏早半句）。
+- **出图回读校验**：截完把图再 OCR 一遍与期望文字比对，不匹配换时间点重截（最多 6 次），兜底时间戳半帧误差。
+- **后端自适应**：`_compat.resolve_asr_backend()` 优先 mlx-whisper（Apple GPU），否则 openai-whisper（CPU）。`--backend` 可强制。
 
 ---
 
 ## 已知限制
 
-- raw 靠「画面变化」定字幕边界，**不识别文字**：文字本身来自原片烧录字幕（100% 一致），但边界依赖字幕是否真的换了画面。花字 / 贴纸 / 录屏在字幕行内变化会误判。
-- ASR 路线不认画面文字（whisper 是听不是看），听写与原字幕可能有出入（如 AdTech 听成 iTech），以 `hybrid` / `textcard` 展示的听写为准。
-- 本机无中文 OCR 时无法把 raw 的图转成文本；若同时要「图文 + 可复制文字」，raw 出图 + 复用转写流程的逐字稿最省。
-- 多人快速对话时，一句可能被切得过碎或过粗 —— 用 `--max-chars` 和 `--dry-run` 先调，再正式出图。
-- `openai-whisper` 在 Windows / Linux 上走 CPU，长视频较慢；可换用更快的第三方后端或缩短输入片段。
+- OCR 会读错个别字（生僻词、英文品牌、花字）；中文正文准确率很高，要 100% 原文以图片为准。
+- 回读校验让出图变慢约一倍（每张多一次 OCR）；图文卡页易被误报「对不上」，先看图再判断。
+- 多人快速对话 / 字幕 <0.5s 一闪而过时 4fps 可能采不到，可 `--fps 6` 重扫。
+- 无烧录字幕的原片需走 ASR 路线（whisper 是听不是看，与原字幕可能有出入）。
 
 ---
 
