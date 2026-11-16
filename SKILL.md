@@ -2,7 +2,10 @@
 name: video-subtitle-slicer
 version: 2.0.0
 display_name: 字幕切图与拼台词
+display_name_zh: 字幕切图与拼台词
 display_name_en: Video Subtitle Slicer
+description_zh: 把成片视频（竖屏、烧录字幕）切成图片，每图一条完整字幕，并拼台词成 1080×1440 图文笔记。首选 RapidOCR 逐帧识别烧录字幕，保证一句不漏；另有边缘检测、whisper 听写、叠字幕、纯文字卡等模式。离线免费，跨平台。
+description_en: Slice a finished video into one image per subtitle line and compose 1080x1440 caption-card notes. RapidOCR-first burned-in subtitle detection with no missed lines, plus edge-detection, whisper ASR, overlay and text-card modes. Offline, free, cross-platform (Windows, macOS, Linux).
 description: 把「成片视频」（多为竖屏、烧录字幕）切成多张图片，每图一条完整字幕，并**拼台词**成 1080×1440 图文笔记（小红书等）。触发词：拼台词、拼第 N-M 的图、拼 12-17、纯粹保留字幕部分/不用板书/板书我单独放一页、保留板书齐全、纯字幕成图。首选 scan_captions.py 用 RapidOCR 逐帧读烧录字幕、按文字归并，保证一句不漏（同字才算同一句）；成图两条路线：build_pages.py 普通拼台词（头图+竖堆字幕条）、pure_caption.py 纯字幕（只留黑底字幕条贴纯白画布）。另有边缘变化检测（快但会漏）、whisper 词级时间戳切句（自动适配 mlx / openai 后端）、叠字幕、纯文字卡等模式。离线免费，跨平台（Windows/macOS/Linux）。
 agent_created: true
 ---
